@@ -14,11 +14,12 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import the stress testing tool
-from tool import NetworkLayerTester, print_banner
+from LAYER7 import NetworkLayerTester, print_banner
 
 class DDoSClient:
     class DDoSClient:
-    def __init__(self, server_url='http://localhost:5000', client_name=None):
+
+       def __init__(self, server_url='http://localhost:5000', client_name=None):
         self.server_url = server_url
         self.client_name = client_name or f"{platform.node()}_{platform.system()}"
         
@@ -287,5 +288,6 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
