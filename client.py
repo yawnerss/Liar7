@@ -17,17 +17,31 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tool import NetworkLayerTester, print_banner
 
 class DDoSClient:
+    class DDoSClient:
     def __init__(self, server_url='http://localhost:5000', client_name=None):
         self.server_url = server_url
         self.client_name = client_name or f"{platform.node()}_{platform.system()}"
-        self.sio = socketio.client.Client() 
+        
+        # Try different client initialization methods
+        try:
+            # Method 1: Standard client
+            self.sio = socketio.SimpleClient()
+        except AttributeError:
+            try:
+                # Method 2: Alternative client
+                import socketio as sio
+                self.sio = sio.Client()
+            except:
+                # Method 3: Direct import
+                from socketio import SimpleClient
+                self.sio = SimpleClient()
+        
         self.current_attack = None
         self.attack_thread = None
         self.running = False
         
         # Setup event handlers
         self.setup_handlers()
-        
         # Client information
         self.client_info = {
             'name': self.client_name,
@@ -273,4 +287,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
