@@ -159,7 +159,7 @@ class DDoSClient:
 def main():
     """Main function"""
     # Get server URL
-    server_url = input("🌐 Server URL [http://localhost:5000]: ").strip()
+    server_url = "http://localhost:5000/"
     if not server_url:
         server_url = "http://localhost:5000"
     
@@ -173,4 +173,5 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
+
 
