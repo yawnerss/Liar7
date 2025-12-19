@@ -1,5 +1,3 @@
-cat > client_fixed.py << 'EOF'
-#!/usr/bin/env python3
 """
 Fixed DDoS Client - Connects to control server
 """
@@ -175,3 +173,4 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
+
